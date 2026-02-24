@@ -1,4 +1,4 @@
-name: Build BeastX Executables
+name: Build BeastX for Windows
 
 on:
   push:
@@ -6,196 +6,57 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false   # build all platforms even if one fails
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: BeastX.exe
-            label: Windows
-          - os: ubuntu-latest
-            artifact: BeastX
-            label: Linux
-          - os: macos-latest
-            artifact: BeastX
-            label: macOS
-
-    runs-on: ${{ matrix.os }}
-    name: Build — ${{ matrix.label }}
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # ── System deps ────────────────────────────────────────────────────────
-
-      - name: Install hidapi (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y libhidapi-hidraw0 libhidapi-libusb0
-
-      - name: Install hidapi (macOS)
-        if: runner.os == 'macOS'
-        run: brew install hidapi
-
-      # ── Python ────────────────────────────────────────────────────────────
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
-        run: pip install hid customtkinter pyinstaller
+      - name: Install dependencies
+        run: pip install hidapi customtkinter pyinstaller
 
-      # ── Diagnose: print where hidapi native lib is (helps debug if broken) ─
-
-      - name: Find hidapi native lib (Windows)
-        if: runner.os == 'Windows'
+      - name: Build exe
         shell: python
         run: |
-          import glob, os, site, pathlib, hid
-          print("hid package location:", pathlib.Path(hid.__file__).parent)
-          search_roots = [str(pathlib.Path(hid.__file__).parent)] + site.getsitepackages()
-          found = []
-          for root in search_roots:
-              found += glob.glob(os.path.join(root, '**', '*.dll'), recursive=True)
-          print("All DLLs near hid:", [f for f in found if 'hid' in f.lower()])
-
-      - name: Find hidapi native lib (Linux)
-        if: runner.os == 'Linux'
-        run: find /usr -name 'libhidapi*' 2>/dev/null || echo "Not found in /usr"
-
-      - name: Find hidapi native lib (macOS)
-        if: runner.os == 'macOS'
-        run: find /usr/local/lib /opt/homebrew/lib -name '*hidapi*' 2>/dev/null || echo "Not found"
-
-      # ── Build ──────────────────────────────────────────────────────────────
-
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        shell: python
-        run: |
-          import subprocess, sys, pathlib, customtkinter, hid, os, glob, site
+          import subprocess, sys, pathlib, customtkinter, hidapi, os, glob, site
 
           ctk = str(pathlib.Path(customtkinter.__file__).parent)
 
-          # Find hidapi DLLs — search hid package dir + all site-packages
-          search_roots = [str(pathlib.Path(hid.__file__).parent)] + site.getsitepackages()
-          dlls = []
-          for root in search_roots:
-              dlls += glob.glob(os.path.join(root, '**', '*.dll'), recursive=True)
-          # Filter to only hidapi-related dlls
-          hidapi_dlls = [d for d in dlls if 'hid' in os.path.basename(d).lower()]
+          # Find all hidapi DLLs shipped inside the hidapi package
+          all_dlls = []
+          for sp in site.getsitepackages():
+              all_dlls += glob.glob(os.path.join(sp, '**', '*.dll'), recursive=True)
+          hidapi_dlls = [d for d in all_dlls if 'hid' in os.path.basename(d).lower()]
           print("Bundling DLLs:", hidapi_dlls)
 
           cmd = [
             sys.executable, '-m', 'PyInstaller',
-            '--noconfirm',
-            '--onefile',
-            '--windowed',          # no console window on Windows
+            '--noconfirm', '--onefile', '--windowed',
             '--name', 'BeastX',
             '--add-data', f'{ctk};customtkinter',
-            '--hidden-import', 'hid',
+            '--collect-all', 'hidapi',
+            '--collect-all', 'customtkinter',
+            '--hidden-import', 'hidapi',
             '--hidden-import', 'customtkinter',
             '--hidden-import', '_tkinter',
-            '--collect-all', 'hid',       # collect everything hid brings
-            '--collect-all', 'customtkinter',
           ]
           for dll in hidapi_dlls:
-              cmd += ['--add-binary', f'{dll};.']   # bundle dlls in root of exe
+              cmd += ['--add-binary', f'{dll};.']
           cmd.append('beastx_app.py')
+          subprocess.run(cmd, check=True)
 
-          result = subprocess.run(cmd, check=True)
-
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-
-          # Find the hidapi dylib (handles both Intel and Apple Silicon paths)
-          DYLIB=$(find /usr/local/lib /opt/homebrew/lib /usr/lib -name '*hidapi*' 2>/dev/null | grep -v '.dSYM' | head -1)
-          echo "Found dylib: $DYLIB"
-
-          if [ -z "$DYLIB" ]; then
-            echo "ERROR: hidapi dylib not found!"
-            exit 1
-          fi
-
-          python -m PyInstaller \
-            --noconfirm \
-            --onefile \
-            --name BeastX \
-            --add-data "$CTK:customtkinter" \
-            --add-binary "$DYLIB:." \
-            --hidden-import hid \
-            --hidden-import customtkinter \
-            --hidden-import _tkinter \
-            --collect-all hid \
-            --collect-all customtkinter \
-            beastx_app.py
-
-      - name: Build (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-
-          # Search all common lib paths including arch-specific ones
-          SO=$(find /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu \
-               -name 'libhidapi*' 2>/dev/null | head -1)
-          echo "Found so: $SO"
-
-          if [ -z "$SO" ]; then
-            echo "ERROR: libhidapi not found!"
-            exit 1
-          fi
-
-          python -m PyInstaller \
-            --noconfirm \
-            --onefile \
-            --name BeastX \
-            --add-data "$CTK:customtkinter" \
-            --add-binary "$SO:." \
-            --hidden-import hid \
-            --hidden-import customtkinter \
-            --hidden-import _tkinter \
-            --collect-all hid \
-            --collect-all customtkinter \
-            beastx_app.py
-
-      # ── Upload ─────────────────────────────────────────────────────────────
-
-      - name: Upload artifact
+      - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
-          name: BeastX-${{ matrix.label }}
-          path: dist/${{ matrix.artifact }}
+          name: BeastX-Windows
+          path: dist/BeastX.exe
           retention-days: 30
-
-  # ── Release ──────────────────────────────────────────────────────────────────
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Prepare release files
-        run: |
-          mkdir release
-          cp artifacts/BeastX-Windows/BeastX.exe  release/BeastX-Windows.exe
-          cp artifacts/BeastX-Linux/BeastX         release/BeastX-Linux
-          cp artifacts/BeastX-macOS/BeastX         release/BeastX-macOS
-          chmod +x release/BeastX-Linux release/BeastX-macOS
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -203,18 +64,9 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: "BeastX Build #${{ github.run_number }}"
           body: |
-            Auto-built from commit ${{ github.sha }}
+            Windows build from commit ${{ github.sha }}
 
-            | Platform | File |
-            |---|---|
-            | Windows 10/11 | `BeastX-Windows.exe` |
-            | Linux | `BeastX-Linux` |
-            | macOS | `BeastX-macOS` |
-
-            **Windows:** If SmartScreen warns you, click *More info → Run anyway*
-            **Linux:** `chmod +x BeastX-Linux && ./BeastX-Linux` — also needs udev rule (see README)
-            **macOS:** Right-click → Open the first time
-          files: |
-            release/BeastX-Windows.exe
-            release/BeastX-Linux
-            release/BeastX-macOS
+            **If SmartScreen warns you:** click *More info → Run anyway*
+          files: dist/BeastX.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
