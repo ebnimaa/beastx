@@ -1,0 +1,143 @@
+name: Build BeastX Executables
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # lets you trigger manually from the Actions tab
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: BeastX.exe
+            label: Windows
+          - os: ubuntu-latest
+            artifact: BeastX
+            label: Linux
+          - os: macos-latest
+            artifact: BeastX
+            label: macOS
+
+    runs-on: ${{ matrix.os }}
+    name: Build — ${{ matrix.label }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Linux: install hidapi system lib ──────────────────────────────
+      - name: Install hidapi (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libhidapi-hidraw0 libhidapi-libusb0
+
+      # ── macOS: install hidapi via Homebrew ────────────────────────────
+      - name: Install hidapi (macOS)
+        if: runner.os == 'macOS'
+        run: brew install hidapi
+
+      # ── Python + deps ─────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install hid customtkinter pyinstaller
+
+      # ── Build ─────────────────────────────────────────────────────────
+      - name: Build executable (Windows / macOS)
+        if: runner.os != 'Linux'
+        run: |
+          python -c "import customtkinter; import pathlib; p=pathlib.Path(customtkinter.__file__).parent; print(p)" > ctk_path.txt
+          python -m PyInstaller \
+            --noconfirm \
+            --onefile \
+            --windowed \
+            --name BeastX \
+            --add-data "$(python -c 'import customtkinter,pathlib,os; print(str(pathlib.Path(customtkinter.__file__).parent)+os.pathsep+\"customtkinter\")')" \
+            --hidden-import hid \
+            --hidden-import customtkinter \
+            --hidden-import _tkinter \
+            --exclude-module unittest \
+            --exclude-module email \
+            --exclude-module http \
+            --exclude-module urllib \
+            --exclude-module xml \
+            beastx_app.py
+
+      - name: Build executable (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --onefile \
+            --windowed \
+            --name BeastX \
+            --add-data "$(python -c 'import customtkinter,pathlib; print(str(pathlib.Path(customtkinter.__file__).parent)+":customtkinter")')" \
+            --hidden-import hid \
+            --hidden-import customtkinter \
+            --hidden-import _tkinter \
+            --exclude-module unittest \
+            --exclude-module email \
+            --exclude-module http \
+            --exclude-module urllib \
+            --exclude-module xml \
+            beastx_app.py
+
+      # ── Upload artifact ───────────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeastX-${{ matrix.label }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 30
+
+  # ── Create GitHub Release with all 3 binaries ─────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only create a release on push to main (not manual triggers)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Rename artifacts for release
+        run: |
+          mkdir release
+          cp artifacts/BeastX-Windows/BeastX.exe  release/BeastX-Windows.exe
+          cp artifacts/BeastX-Linux/BeastX         release/BeastX-Linux
+          cp artifacts/BeastX-macOS/BeastX         release/BeastX-macOS
+          chmod +x release/BeastX-Linux release/BeastX-macOS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "BeastX Build #${{ github.run_number }}"
+          body: |
+            Auto-built from commit ${{ github.sha }}
+
+            ## Downloads
+            | Platform | File |
+            |---|---|
+            | Windows 10/11 | `BeastX-Windows.exe` |
+            | Linux | `BeastX-Linux` |
+            | macOS | `BeastX-macOS` |
+
+            **Windows:** If SmartScreen warns you, click *More info → Run anyway*
+            **Linux:** `chmod +x BeastX-Linux && ./BeastX-Linux` — also needs [udev rule](https://github.com/${{ github.repository }}#linux-setup)
+            **macOS:** Right-click → Open the first time (Gatekeeper)
+          files: |
+            release/BeastX-Windows.exe
+            release/BeastX-Linux
+            release/BeastX-macOS
+          draft: false
+          prerelease: false
