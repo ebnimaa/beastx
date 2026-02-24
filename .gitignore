@@ -1,0 +1,9 @@
+dist/
+build/
+__pycache__/
+*.pyc
+*.spec
+*.egg-info/
+.DS_Store
+Thumbs.db
+ctk_path.txt
