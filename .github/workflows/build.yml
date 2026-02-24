@@ -43,7 +43,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install hid customtkinter pyinstaller
 
-      # Windows — use Python subprocess to avoid PowerShell backslash issues
+      # Windows — pure Python to avoid PowerShell backslash issues
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
         shell: python
@@ -58,11 +58,6 @@ jobs:
             '--hidden-import', 'hid',
             '--hidden-import', 'customtkinter',
             '--hidden-import', '_tkinter',
-            '--exclude-module', 'unittest',
-            '--exclude-module', 'email',
-            '--exclude-module', 'http',
-            '--exclude-module', 'urllib',
-            '--exclude-module', 'xml',
             'beastx_app.py',
           ], check=True)
 
@@ -71,14 +66,14 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter --exclude-module unittest --exclude-module email --exclude-module http --exclude-module urllib --exclude-module xml beastx_app.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter beastx_app.py
 
       # Linux
       - name: Build executable (Linux)
         if: runner.os == 'Linux'
         run: |
           CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter --exclude-module unittest --exclude-module email --exclude-module http --exclude-module urllib --exclude-module xml beastx_app.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter beastx_app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
