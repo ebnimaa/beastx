@@ -19,37 +19,32 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install hidapi customtkinter pyinstaller
+        run: pip install hid customtkinter pyinstaller
+
+      - name: Install hidapi DLL via vcpkg
+        run: |
+          vcpkg install hidapi:x64-windows
+          copy "C:\vcpkg\installed\x64-windows\bin\hidapi.dll" hidapi.dll
 
       - name: Build exe
         shell: python
         run: |
-          import subprocess, sys, pathlib, customtkinter, hidapi, os, glob, site
+          import subprocess, sys, pathlib, customtkinter
 
           ctk = str(pathlib.Path(customtkinter.__file__).parent)
 
-          # Find all hidapi DLLs shipped inside the hidapi package
-          all_dlls = []
-          for sp in site.getsitepackages():
-              all_dlls += glob.glob(os.path.join(sp, '**', '*.dll'), recursive=True)
-          hidapi_dlls = [d for d in all_dlls if 'hid' in os.path.basename(d).lower()]
-          print("Bundling DLLs:", hidapi_dlls)
-
-          cmd = [
+          subprocess.run([
             sys.executable, '-m', 'PyInstaller',
             '--noconfirm', '--onefile', '--windowed',
             '--name', 'BeastX',
             '--add-data', f'{ctk};customtkinter',
-            '--collect-all', 'hidapi',
+            '--add-binary', 'hidapi.dll;.',
             '--collect-all', 'customtkinter',
-            '--hidden-import', 'hidapi',
+            '--hidden-import', 'hid',
             '--hidden-import', 'customtkinter',
             '--hidden-import', '_tkinter',
-          ]
-          for dll in hidapi_dlls:
-              cmd += ['--add-binary', f'{dll};.']
-          cmd.append('beastx_app.py')
-          subprocess.run(cmd, check=True)
+            'beastx_app.py',
+          ], check=True)
 
       - name: Upload exe
         uses: actions/upload-artifact@v4
@@ -65,8 +60,7 @@ jobs:
           name: "BeastX Build #${{ github.run_number }}"
           body: |
             Windows build from commit ${{ github.sha }}
-
-            **If SmartScreen warns you:** click *More info → Run anyway*
+            If SmartScreen warns you — click More info then Run anyway
           files: dist/BeastX.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
