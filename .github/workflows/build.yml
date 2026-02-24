@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false   # build all platforms even if one fails
       matrix:
         include:
           - os: windows-latest
@@ -27,13 +28,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── System deps ────────────────────────────────────────────────────────
+
       - name: Install hidapi (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libhidapi-hidraw0 libhidapi-libusb0
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libhidapi-hidraw0 libhidapi-libusb0
 
       - name: Install hidapi (macOS)
         if: runner.os == 'macOS'
         run: brew install hidapi
+
+      # ── Python ────────────────────────────────────────────────────────────
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,37 +50,122 @@ jobs:
       - name: Install Python dependencies
         run: pip install hid customtkinter pyinstaller
 
-      # Windows — pure Python to avoid PowerShell backslash issues
-      - name: Build executable (Windows)
+      # ── Diagnose: print where hidapi native lib is (helps debug if broken) ─
+
+      - name: Find hidapi native lib (Windows)
         if: runner.os == 'Windows'
         shell: python
         run: |
-          import subprocess, sys, pathlib, customtkinter
+          import glob, os, site, pathlib, hid
+          print("hid package location:", pathlib.Path(hid.__file__).parent)
+          search_roots = [str(pathlib.Path(hid.__file__).parent)] + site.getsitepackages()
+          found = []
+          for root in search_roots:
+              found += glob.glob(os.path.join(root, '**', '*.dll'), recursive=True)
+          print("All DLLs near hid:", [f for f in found if 'hid' in f.lower()])
+
+      - name: Find hidapi native lib (Linux)
+        if: runner.os == 'Linux'
+        run: find /usr -name 'libhidapi*' 2>/dev/null || echo "Not found in /usr"
+
+      - name: Find hidapi native lib (macOS)
+        if: runner.os == 'macOS'
+        run: find /usr/local/lib /opt/homebrew/lib -name '*hidapi*' 2>/dev/null || echo "Not found"
+
+      # ── Build ──────────────────────────────────────────────────────────────
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: python
+        run: |
+          import subprocess, sys, pathlib, customtkinter, hid, os, glob, site
+
           ctk = str(pathlib.Path(customtkinter.__file__).parent)
-          subprocess.run([
+
+          # Find hidapi DLLs — search hid package dir + all site-packages
+          search_roots = [str(pathlib.Path(hid.__file__).parent)] + site.getsitepackages()
+          dlls = []
+          for root in search_roots:
+              dlls += glob.glob(os.path.join(root, '**', '*.dll'), recursive=True)
+          # Filter to only hidapi-related dlls
+          hidapi_dlls = [d for d in dlls if 'hid' in os.path.basename(d).lower()]
+          print("Bundling DLLs:", hidapi_dlls)
+
+          cmd = [
             sys.executable, '-m', 'PyInstaller',
-            '--noconfirm', '--onefile', '--windowed',
+            '--noconfirm',
+            '--onefile',
+            '--windowed',          # no console window on Windows
             '--name', 'BeastX',
             '--add-data', f'{ctk};customtkinter',
             '--hidden-import', 'hid',
             '--hidden-import', 'customtkinter',
             '--hidden-import', '_tkinter',
-            'beastx_app.py',
-          ], check=True)
+            '--collect-all', 'hid',       # collect everything hid brings
+            '--collect-all', 'customtkinter',
+          ]
+          for dll in hidapi_dlls:
+              cmd += ['--add-binary', f'{dll};.']   # bundle dlls in root of exe
+          cmd.append('beastx_app.py')
 
-      # macOS
-      - name: Build executable (macOS)
+          result = subprocess.run(cmd, check=True)
+
+      - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
           CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter beastx_app.py
 
-      # Linux
-      - name: Build executable (Linux)
+          # Find the hidapi dylib (handles both Intel and Apple Silicon paths)
+          DYLIB=$(find /usr/local/lib /opt/homebrew/lib /usr/lib -name '*hidapi*' 2>/dev/null | grep -v '.dSYM' | head -1)
+          echo "Found dylib: $DYLIB"
+
+          if [ -z "$DYLIB" ]; then
+            echo "ERROR: hidapi dylib not found!"
+            exit 1
+          fi
+
+          python -m PyInstaller \
+            --noconfirm \
+            --onefile \
+            --name BeastX \
+            --add-data "$CTK:customtkinter" \
+            --add-binary "$DYLIB:." \
+            --hidden-import hid \
+            --hidden-import customtkinter \
+            --hidden-import _tkinter \
+            --collect-all hid \
+            --collect-all customtkinter \
+            beastx_app.py
+
+      - name: Build (Linux)
         if: runner.os == 'Linux'
         run: |
           CTK=$(python -c 'import customtkinter,pathlib; print(pathlib.Path(customtkinter.__file__).parent)')
-          python -m PyInstaller --noconfirm --onefile --windowed --name BeastX --add-data "$CTK:customtkinter" --hidden-import hid --hidden-import customtkinter --hidden-import _tkinter beastx_app.py
+
+          # Search all common lib paths including arch-specific ones
+          SO=$(find /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu \
+               -name 'libhidapi*' 2>/dev/null | head -1)
+          echo "Found so: $SO"
+
+          if [ -z "$SO" ]; then
+            echo "ERROR: libhidapi not found!"
+            exit 1
+          fi
+
+          python -m PyInstaller \
+            --noconfirm \
+            --onefile \
+            --name BeastX \
+            --add-data "$CTK:customtkinter" \
+            --add-binary "$SO:." \
+            --hidden-import hid \
+            --hidden-import customtkinter \
+            --hidden-import _tkinter \
+            --collect-all hid \
+            --collect-all customtkinter \
+            beastx_app.py
+
+      # ── Upload ─────────────────────────────────────────────────────────────
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -81,6 +173,8 @@ jobs:
           name: BeastX-${{ matrix.label }}
           path: dist/${{ matrix.artifact }}
           retention-days: 30
+
+  # ── Release ──────────────────────────────────────────────────────────────────
 
   release:
     needs: build
@@ -98,9 +192,9 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir release
-          cp artifacts/BeastX-Windows/BeastX.exe release/BeastX-Windows.exe
-          cp artifacts/BeastX-Linux/BeastX        release/BeastX-Linux
-          cp artifacts/BeastX-macOS/BeastX        release/BeastX-macOS
+          cp artifacts/BeastX-Windows/BeastX.exe  release/BeastX-Windows.exe
+          cp artifacts/BeastX-Linux/BeastX         release/BeastX-Linux
+          cp artifacts/BeastX-macOS/BeastX         release/BeastX-macOS
           chmod +x release/BeastX-Linux release/BeastX-macOS
 
       - name: Create Release
